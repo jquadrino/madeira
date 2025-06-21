@@ -3,52 +3,86 @@ gi.require_version('Gst', '1.0')
 gi.require_version('GstBase', '1.0')
 from gi.repository import Gst, GstBase, GObject, GLib
 
-import onnxruntime as ort
 import numpy as np
 from PIL import Image
+import torch
 
 import os
 import traceback
+
+from sam2.build_sam import build_sam2
+from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
+
 Gst.init(None)
 
 class GstMadeira(GstBase.BaseTransform):
     __gstmetadata__ = ('madeira',
                        'SAM2 Image Segmentation Element', 
                        'Filter/Effect/Video',
-                       'Performs image segmentation using SAM2 ONNX models')
+                       'Performs image segmentation using SAM2 models')
 
     __gst_plugin_name__ = "madeira"
-    __gst_plugin_description__ = "Performs image segmentation using SAM2 ONNX models"
-    __gst_plugin_version__ = "0.1"
+    __gst_plugin_description__ = "Performs image segmentation using SAM2 models"
+    __gst_plugin_version__ = "0.2"
     __gst_plugin_license__ = "MIT"
 
     __gproperties__ = {
-        "encoder-path": (GObject.TYPE_STRING, "Encoder ONNX Path",
-                         "Path to the SAM2 encoder ONNX model file.",
-                         "sam2_hiera_base_plus.encoder.onnx",
-                         GObject.PARAM_READWRITE | GObject.PARAM_STATIC_STRINGS),
-        "decoder-path": (GObject.TYPE_STRING, "Decoder ONNX Path",
-                         "Path to the SAM2 decoder ONNX model file.",
-                         "sam2_hiera_base_plus.decoder.onnx",
-                         GObject.PARAM_READWRITE | GObject.PARAM_STATIC_STRINGS),
-        "target-size": (GObject.TYPE_INT, "Target Image Size",
-                        "The square dimension (e.g., 1024) to which the image will be "
-                        "resized before being fed into the SAM2 models.",
-                        128, 4096, 1024,
-                        GObject.PARAM_READWRITE | GObject.PARAM_STATIC_STRINGS),
-        "mask-threshold": (GObject.TYPE_FLOAT, "Mask Threshold",
-                           "Threshold (0.0-1.0) applied to the decoder's output logits "
-                           "to binarize the segmentation mask. Higher values result in "
-                           "stricter masks.",
-                           0.0, 1.0, 0.3,
+        "checkpoint-path": (GObject.TYPE_STRING, "SAM2 Checkpoint Path",
+                           "Path to the SAM2 checkpoint file (.pt).",
+                           "sam2.1_hiera_large.pt",
                            GObject.PARAM_READWRITE | GObject.PARAM_STATIC_STRINGS),
-        "grid-stride": (GObject.TYPE_INT, "Grid Stride",
-                        "Stride (in pixels relative to original image size) for "
-                        "generating the grid of prompt points. Smaller strides "
-                        "generate more points and potentially more detailed segmentation "
-                        "but are slower.",
-                        1, 100, 32,
-                        GObject.PARAM_READWRITE | GObject.PARAM_STATIC_STRINGS),
+        "config-path": (GObject.TYPE_STRING, "SAM2 Config Path",
+                       "Path to the SAM2 config file (.yaml).",
+                       "configs/sam2.1/sam2.1_hiera_l.yaml",
+                       GObject.PARAM_READWRITE | GObject.PARAM_STATIC_STRINGS),
+        "device": (GObject.TYPE_STRING, "Device",
+                  "Device to run inference on (cpu, cuda, mps).",
+                  "cpu",
+                  GObject.PARAM_READWRITE | GObject.PARAM_STATIC_STRINGS),
+        "points-per-side": (GObject.TYPE_INT, "Points Per Side",
+                           "Number of points to sample along each side of the image.",
+                           1, 64, 32,
+                           GObject.PARAM_READWRITE | GObject.PARAM_STATIC_STRINGS),
+        "points-per-batch": (GObject.TYPE_INT, "Points Per Batch",
+                            "Number of points to process in each batch.",
+                            1, 1024, 64,
+                            GObject.PARAM_READWRITE | GObject.PARAM_STATIC_STRINGS),
+        "pred-iou-thresh": (GObject.TYPE_FLOAT, "Predicted IoU Threshold",
+                           "Threshold for predicted IoU to filter masks.",
+                           0.0, 1.0, 0.8,
+                           GObject.PARAM_READWRITE | GObject.PARAM_STATIC_STRINGS),
+        "stability-score-thresh": (GObject.TYPE_FLOAT, "Stability Score Threshold",
+                                  "Threshold for stability score to filter masks.",
+                                  0.0, 1.0, 0.95,
+                                  GObject.PARAM_READWRITE | GObject.PARAM_STATIC_STRINGS),
+        "box-nms-thresh": (GObject.TYPE_FLOAT, "Box NMS Threshold",
+                          "IoU threshold for box-based NMS filtering.",
+                          0.0, 1.0, 0.7,
+                          GObject.PARAM_READWRITE | GObject.PARAM_STATIC_STRINGS),
+        "crop-n-layers": (GObject.TYPE_INT, "Crop N Layers",
+                         "Number of layers for crop-based processing.",
+                         0, 10, 0,
+                         GObject.PARAM_READWRITE | GObject.PARAM_STATIC_STRINGS),
+        "crop-nms-thresh": (GObject.TYPE_FLOAT, "Crop NMS Threshold",
+                           "IoU threshold for crop-based NMS filtering.",
+                           0.0, 1.0, 0.7,
+                           GObject.PARAM_READWRITE | GObject.PARAM_STATIC_STRINGS),
+        "crop-overlap-ratio": (GObject.TYPE_FLOAT, "Crop Overlap Ratio",
+                              "Overlap ratio for crop-based processing.",
+                              0.0, 1.0, 512.0/1500.0,
+                              GObject.PARAM_READWRITE | GObject.PARAM_STATIC_STRINGS),
+        "crop-n-points-downscale-factor": (GObject.TYPE_INT, "Crop Points Downscale Factor",
+                                          "Factor to downscale points in crops.",
+                                          1, 10, 1,
+                                          GObject.PARAM_READWRITE | GObject.PARAM_STATIC_STRINGS),
+        "min-mask-region-area": (GObject.TYPE_INT, "Min Mask Region Area",
+                                "Minimum area (in pixels) for mask regions.",
+                                0, 100000, 0,
+                                GObject.PARAM_READWRITE | GObject.PARAM_STATIC_STRINGS),
+        "use-m2m": (GObject.TYPE_BOOLEAN, "Use Mask-to-Mask",
+                   "Whether to use mask-to-mask processing.",
+                   False,
+                   GObject.PARAM_READWRITE | GObject.PARAM_STATIC_STRINGS),
     }
 
     _GstMadeira__gst_caps = Gst.Caps.from_string(
@@ -66,14 +100,24 @@ class GstMadeira(GstBase.BaseTransform):
 
     def __init__(self):
         super().__init__()
-        self.encoder_path = "sam2_hiera_base_plus.encoder.onnx"
-        self.decoder_path = "sam2_hiera_base_plus.decoder.onnx"
-        self.target_size = 1024
-        self.mask_threshold = 0.3
-        self.grid_stride = 32
+        self.checkpoint_path = "sam2.1_hiera_large.pt"
+        self.config_path = "configs/sam2.1/sam2.1_hiera_l.yaml"
+        self.device = "cpu"
+        
+        self.points_per_side = 32
+        self.points_per_batch = 64
+        self.pred_iou_thresh = 0.8
+        self.stability_score_thresh = 0.95
+        self.box_nms_thresh = 0.7
+        self.crop_n_layers = 0
+        self.crop_nms_thresh = 0.7
+        self.crop_overlap_ratio = 512.0/1500.0
+        self.crop_n_points_downscale_factor = 1
+        self.min_mask_region_area = 0
+        self.use_m2m = False
 
-        self.enc = None
-        self.dec = None
+        self.sam2_model = None
+        self.mask_generator = None
 
         self.image_width = 0
         self.image_height = 0
@@ -83,56 +127,103 @@ class GstMadeira(GstBase.BaseTransform):
         self.set_in_place(True)
 
     def do_get_property(self, prop):
-        if prop.name == "encoder-path":
-            return self.encoder_path
-        elif prop.name == "decoder-path":
-            return self.decoder_path
-        elif prop.name == "target-size":
-            return self.target_size
-        elif prop.name == "mask-threshold":
-            return self.mask_threshold
-        elif prop.name == "grid-stride":
-            return self.grid_stride
+        prop_map = {
+            "checkpoint-path": self.checkpoint_path,
+            "config-path": self.config_path,
+            "device": self.device,
+            "points-per-side": self.points_per_side,
+            "points-per-batch": self.points_per_batch,
+            "pred-iou-thresh": self.pred_iou_thresh,
+            "stability-score-thresh": self.stability_score_thresh,
+            "box-nms-thresh": self.box_nms_thresh,
+            "crop-n-layers": self.crop_n_layers,
+            "crop-nms-thresh": self.crop_nms_thresh,
+            "crop-overlap-ratio": self.crop_overlap_ratio,
+            "crop-n-points-downscale-factor": self.crop_n_points_downscale_factor,
+            "min-mask-region-area": self.min_mask_region_area,
+            "use-m2m": self.use_m2m,
+        }
+        
+        if prop.name in prop_map:
+            return prop_map[prop.name]
         else:
             raise AttributeError(f"Unknown property {prop.name}")
 
     def do_set_property(self, prop, value):
-        if prop.name == "encoder-path":
-            self.encoder_path = value
-        elif prop.name == "decoder-path":
-            self.decoder_path = value
-        elif prop.name == "target-size":
-            self.target_size = value
-        elif prop.name == "mask-threshold":
-            self.mask_threshold = value
-        elif prop.name == "grid-stride":
-            self.grid_stride = value
+        if prop.name == "checkpoint-path":
+            self.checkpoint_path = value
+        elif prop.name == "config-path":
+            self.config_path = value
+        elif prop.name == "device":
+            self.device = value
+        elif prop.name == "points-per-side":
+            self.points_per_side = value
+        elif prop.name == "points-per-batch":
+            self.points_per_batch = value
+        elif prop.name == "pred-iou-thresh":
+            self.pred_iou_thresh = value
+        elif prop.name == "stability-score-thresh":
+            self.stability_score_thresh = value
+        elif prop.name == "box-nms-thresh":
+            self.box_nms_thresh = value
+        elif prop.name == "crop-n-layers":
+            self.crop_n_layers = value
+        elif prop.name == "crop-nms-thresh":
+            self.crop_nms_thresh = value
+        elif prop.name == "crop-overlap-ratio":
+            self.crop_overlap_ratio = value
+        elif prop.name == "crop-n-points-downscale-factor":
+            self.crop_n_points_downscale_factor = value
+        elif prop.name == "min-mask-region-area":
+            self.min_mask_region_area = value
+        elif prop.name == "use-m2m":
+            self.use_m2m = value
         else:
             raise AttributeError(f"Unknown property {prop.name}")
 
     def do_start(self):
-        Gst.debug(f"Starting GstMadeira: Encoder={self.encoder_path}, Decoder={self.decoder_path}")
+        Gst.debug(f"Starting GstMadeira: Checkpoint={self.checkpoint_path}, Config={self.config_path}")
         try:
-            if not os.path.exists(self.encoder_path):
-                Gst.error(f"Encoder model not found: {self.encoder_path}")
+            if not os.path.exists(self.checkpoint_path):
+                Gst.error(f"Checkpoint file not found: {self.checkpoint_path}")
                 return False
-            if not os.path.exists(self.decoder_path):
-                Gst.error(f"Decoder model not found: {self.decoder_path}")
+            if not os.path.exists(self.config_path):
+                Gst.error(f"Config file not found: {self.config_path}")
                 return False
 
-            self.enc = ort.InferenceSession(self.encoder_path, providers=["CPUExecutionProvider"])
-            self.dec = ort.InferenceSession(self.decoder_path, providers=["CPUExecutionProvider"])
-            Gst.info("SAM2 ONNX models loaded successfully.")
+            self.sam2_model = build_sam2(
+                self.config_path, 
+                self.checkpoint_path, 
+                device=self.device, 
+                apply_postprocessing=False
+            )
+            
+            self.mask_generator = SAM2AutomaticMaskGenerator(
+                self.sam2_model,
+                points_per_side=self.points_per_side,
+                points_per_batch=self.points_per_batch,
+                pred_iou_thresh=self.pred_iou_thresh,
+                stability_score_thresh=self.stability_score_thresh,
+                box_nms_thresh=self.box_nms_thresh,
+                crop_n_layers=self.crop_n_layers,
+                crop_nms_thresh=self.crop_nms_thresh,
+                crop_overlap_ratio=self.crop_overlap_ratio,
+                crop_n_points_downscale_factor=self.crop_n_points_downscale_factor,
+                min_mask_region_area=self.min_mask_region_area,
+                use_m2m=self.use_m2m,
+            )
+            
+            Gst.info("SAM2 model loaded successfully.")
             return True
         except Exception as e:
-            Gst.error(f"Failed to load ONNX models: {e}")
+            Gst.error(f"Failed to load SAM2 model: {e}")
             traceback.print_exc()
             return False
 
     def do_stop(self):
-        self.enc = None
-        self.dec = None
-        Gst.info("SAM2 ONNX models unloaded.")
+        self.sam2_model = None
+        self.mask_generator = None
+        Gst.info("SAM2 model unloaded.")
         return True
 
     def do_set_caps(self, incaps, outcaps):
@@ -154,8 +245,9 @@ class GstMadeira(GstBase.BaseTransform):
                  f"Format: {self.input_format}, Bytes per pixel: {self.bytes_per_pixel}")
         return True
 
-    def _preprocess_image(self, np_image, target_size):
+    def _preprocess_image(self, np_image):
         processed_image_np = np_image
+        
         if self.input_format == "BGRx":
             processed_image_np = np_image[:, :, :3][:, :, ::-1]
         elif self.input_format == "BGRA":
@@ -164,42 +256,63 @@ class GstMadeira(GstBase.BaseTransform):
             processed_image_np = np_image[:, :, :3]
         elif self.input_format == "RGB":
             pass
-
-        img_pil = Image.fromarray(processed_image_np.astype(np.uint8))
-        img_resized_pil = img_pil.resize((target_size, target_size), Image.BILINEAR)
         
-        im_arr = np.array(img_resized_pil).astype(np.float32) / 255.0
-        
-        mean = np.array([0.485, 0.456, 0.406]).reshape((1, 1, 3))
-        std = np.array([0.229, 0.224, 0.225]).reshape((1, 1, 3))
-        image_np_normalized = (im_arr - mean) / std
-        
-        image_tensor = image_np_normalized.transpose(2, 0, 1)[None]
-        
-        return image_tensor.astype(np.float32), img_resized_pil, (self.image_width, self.image_height)
+        return processed_image_np.astype(np.uint8)
 
-    def _make_grid(self, h_feat, w_feat, stride):
-        ys = np.arange(stride // 2, h_feat * 4, stride)
-        xs = np.arange(stride // 2, w_feat * 4, stride)
+    def _create_combined_mask(self, masks):
+        if not masks:
+            return np.zeros((self.image_height, self.image_width), dtype=bool)
         
-        grid = np.stack(np.meshgrid(xs, ys, indexing='xy'), axis=-1).reshape(-1, 2)
-        grid = grid / np.array([w_feat * 4, h_feat * 4]) 
-        return grid
+        combined_mask = masks[0]['segmentation'].astype(bool)
+        for mask_data in masks[1:]:
+            combined_mask = np.logical_or(combined_mask, mask_data['segmentation'])
+        
+        return combined_mask
 
-    def _overlay_segmentation_mask(self, original_resized_pil_image, combined_mask_np):
-        mask_img_pil = Image.fromarray((combined_mask_np * 255).astype(np.uint8))
-        mask_img_pil = mask_img_pil.resize(original_resized_pil_image.size, Image.NEAREST)
+    def _overlay_segmentation_mask(self, original_image, combined_mask):
+        overlay = np.zeros((*combined_mask.shape, 4), dtype=np.uint8)
+        overlay[combined_mask] = [255, 0, 0, 128]
+        
+        if original_image.shape[2] == 3:
+            original_rgba = np.concatenate([
+                original_image, 
+                np.full((original_image.shape[0], original_image.shape[1], 1), 255, dtype=np.uint8)
+            ], axis=2)
+        else:
+            original_rgba = original_image.copy()
+        
+        mask_alpha = overlay[:, :, 3:4] / 255.0
+        result = original_rgba.astype(np.float32)
+        result[:, :, :3] = (1 - mask_alpha) * result[:, :, :3] + mask_alpha * overlay[:, :, :3]
+        
+        return result.astype(np.uint8)
 
-        overlay_pil = Image.new("RGBA", original_resized_pil_image.size)
-        overlay_pil.paste((255, 0, 0, 128), mask=mask_img_pil)
-
-        result_img_pil = original_resized_pil_image.convert("RGBA")
-        result_img_pil.alpha_composite(overlay_pil)
-        return result_img_pil
+    def _convert_output_format(self, result_image):
+        if self.input_format == "BGRx":
+            if result_image.shape[2] == 4:
+                result_image = result_image[:, :, [2, 1, 0, 3]]
+            else:
+                result_image = result_image[:, :, ::-1]
+                alpha_channel = np.full((self.image_height, self.image_width, 1), 255, dtype=np.uint8)
+                result_image = np.concatenate((result_image, alpha_channel), axis=2)
+        elif self.input_format == "BGRA":
+            if result_image.shape[2] == 4:
+                result_image = result_image[:, :, [2, 1, 0, 3]]
+            else:
+                result_image = result_image[:, :, ::-1]
+                alpha_channel = np.full((self.image_height, self.image_width, 1), 255, dtype=np.uint8)
+                result_image = np.concatenate((result_image, alpha_channel), axis=2)
+        elif self.input_format == "RGB":
+            if result_image.shape[2] == 4:
+                result_image = result_image[:, :, :3]
+        elif self.input_format == "RGBA":
+            pass
+        
+        return result_image
 
     def do_transform_ip(self, buffer):
-        if not self.enc or not self.dec:
-            Gst.error("ONNX models not loaded. Cannot process buffer. Please check plugin initialization.")
+        if not self.mask_generator:
+            Gst.error("SAM2 model not loaded. Cannot process buffer.")
             return Gst.FlowReturn.ERROR
 
         try:
@@ -212,71 +325,26 @@ class GstMadeira(GstBase.BaseTransform):
                 self.image_height, self.image_width, self.bytes_per_pixel
             )
 
-
-            image_tensor, resized_img_pil, (orig_w, orig_h) = self._preprocess_image(np_image, self.target_size)
-            
-            enc_out = self.enc.run(None, {"image": image_tensor})
-            h0, h1, image_embeddings = enc_out
-            Hc, Wc = image_embeddings.shape[2], image_embeddings.shape[3]
-            grid = self._make_grid(Hc, Wc, self.grid_stride)
-
-            all_masks = []
-            for (x, y) in grid:
-                dec_inputs = {
-                    "image_embed": image_embeddings,
-                    "high_res_feats_0": h0,
-                    "high_res_feats_1": h1,
-                    "point_coords": np.array([[[x, y]]], dtype=np.float32),
-                    "point_labels": np.array([[1]], dtype=np.float32),
-                    "has_mask_input": np.array([0], dtype=np.float32),
-                    "mask_input": np.zeros((1, 1, Hc * 4, Wc * 4), dtype=np.float32),
-                }
-                dec_out = self.dec.run(None, dec_inputs)
-                mask_logits = dec_out[0]
-                mask = (mask_logits[0, 0] > self.mask_threshold)
-                all_masks.append(mask)
-
-            if all_masks:
-                combined_mask = np.any(np.stack(all_masks, axis=0), axis=0)
-            else:
-                combined_mask = np.zeros((self.target_size, self.target_size), dtype=bool)
-
-            res_img_pil = self._overlay_segmentation_mask(resized_img_pil, combined_mask)
-            result_np_image = np.array(res_img_pil)
-
-
-            if self.input_format == "BGRx":
-                if result_np_image.shape[2] == 3:
-                    result_np_image = result_np_image[:, :, ::-1]
-                    alpha_channel = np.full((self.image_height, self.image_width, 1), 255, dtype=np.uint8)
-                    result_np_image = np.concatenate((result_np_image, alpha_channel), axis=2)
-                elif result_np_image.shape[2] == 4:
-                    result_np_image = result_np_image[:, :, [2,1,0,3]]
-            elif self.input_format == "BGRA":
-                if result_np_image.shape[2] == 3:
-                    alpha_channel = np.full((self.image_height, self.image_width, 1), 255, dtype=np.uint8)
-                    result_np_image = np.concatenate((result_np_image[:, :, ::-1], alpha_channel), axis=2)
-                elif result_np_image.shape[2] == 4:
-                    result_np_image = result_np_image[:, :, [2,1,0,3]]
-            elif self.input_format == "RGB":
-                if result_np_image.shape[2] == 4:
-                    result_np_image = result_np_image[:, :, :3]
-            elif self.input_format == "RGBA":
-                pass
-
+            rgb_image = self._preprocess_image(np_image)
+            masks = self.mask_generator.generate(rgb_image)
+            combined_mask = self._create_combined_mask(masks)
+            result_image = self._overlay_segmentation_mask(rgb_image, combined_mask)
+            result_image = self._convert_output_format(result_image)
             expected_buffer_size = self.image_width * self.image_height * self.bytes_per_pixel
-            if result_np_image.nbytes != expected_buffer_size:
-                Gst.warning(f"Output image byte size ({result_np_image.nbytes}) does not match expected buffer size ({expected_buffer_size}). "
-                            f"This could lead to buffer issues. Input format was {self.input_format}, output shape {result_np_image.shape}")
+            if result_image.nbytes != expected_buffer_size:
+                Gst.warning(f"Output image byte size ({result_image.nbytes}) does not match expected buffer size ({expected_buffer_size}). "
+                           f"Input format: {self.input_format}, output shape: {result_image.shape}")
 
-            mapinfo.data[:] = result_np_image.tobytes()
-
+            mapinfo.data[:] = result_image.tobytes()
             buffer.unmap(mapinfo)
+            
             return Gst.FlowReturn.OK
 
         except Exception as e:
             Gst.error(f"Error during SAM2 transformation: {e}")
             traceback.print_exc()
+            if 'mapinfo' in locals():
+                buffer.unmap(mapinfo)
             return Gst.FlowReturn.ERROR
 
 GObject.type_register(GstMadeira)
