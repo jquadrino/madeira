@@ -19,40 +19,21 @@ See [jquadrino/segment-anything-v2-onnx](https://huggingface.co/jquadrino/segmen
 - SAMv2 ONNX model file
 
 
-### Install
-
-```bash
-pip install -r requirements.txt
-
-# download and place ONNX model here
-
-export GST_PLUGIN_PATH=$PWD:$GST_PLUGIN_PATH
-```
-
 ## Usage
 
 
 ```bash
-gst-launch-1.0 \
-    videotestsrc ! \
-    videoconvert ! \
-    madeira model-path=/path/to/samv2.onnx ! \
-    videoconvert ! \
-    autovideosink
-```
+export GST_PLUGIN_PATH=$(pwd)/madeira/plugins
 
-
-```bash
 gst-launch-1.0 \
-    filesrc location=input.mp4 ! \
-    decodebin ! \
-    videoconvert ! \
-    madeira model-path=/path/to/samv2.onnx name=segmenter ! \
-    videoconvert ! \
-    x264enc ! \
-    mp4mux ! \
-    filesink location=output.mp4 \
-    \
-    segmenter.detection ! \
-    filesink location=detections.json
+    filesrc location=car-detection.mp4 !
+    decodebin !
+    videoconvert !
+    video/x-raw,format=BGRx !
+    videorate !
+    video/x-raw,framerate=1/1 !
+    madeira mask-threshold=0.4 grid-stride=100 !
+    videoconvert !
+    x264enc tune=zerolatency ! 
+    mp4mux ! filesink location=output.mp4
 ```
