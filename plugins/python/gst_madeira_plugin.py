@@ -65,8 +65,8 @@ class GstMadeira(GstBase.BaseTransform):
 
     def __init__(self):
         super().__init__()
-        self.encoder_path = "sam2_hiera_base_plus.encoder.onnx"
-        self.decoder_path = "sam2_hiera_base_plus.decoder.onnx"
+        self.encoder_path = "sam2_hiera_tiny.encoder.onnx"
+        self.decoder_path = "sam2_hiera_tiny.decoder.onnx"
         self.target_size = 1024
         self.mask_threshold = 0.3
         self.grid_stride = 32
