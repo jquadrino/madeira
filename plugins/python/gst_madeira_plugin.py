@@ -25,11 +25,11 @@ class GstMadeira(GstBase.BaseTransform):
     __gproperties__ = {
         "encoder-path": (GObject.TYPE_STRING, "Encoder ONNX Path",
                          "Path to the SAM2 encoder ONNX model file.",
-                         "sam2_hiera_base_plus.encoder.onnx",
+                         "sam2_hiera_tiny.encoder.onnx",
                          GObject.PARAM_READWRITE | GObject.PARAM_STATIC_STRINGS),
         "decoder-path": (GObject.TYPE_STRING, "Decoder ONNX Path",
                          "Path to the SAM2 decoder ONNX model file.",
-                         "sam2_hiera_base_plus.decoder.onnx",
+                         "sam2_hiera_tiny.decoder.onnx",
                          GObject.PARAM_READWRITE | GObject.PARAM_STATIC_STRINGS),
         "target-size": (GObject.TYPE_INT, "Target Image Size",
                         "The square dimension (e.g., 1024) to which the image will be "
