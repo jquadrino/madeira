@@ -141,9 +141,9 @@ class GstMadeira(GstBase.BaseTransform):
         self.image_height = structure.get_value("height")
         self.input_format = structure.get_value("format")
 
-        if self.input_format in ["RGB", "BGRx"]:
+        if self.input_format in ["RGB"]:
             self.bytes_per_pixel = 3
-        elif self.input_format in ["RGBA", "BGRA"]:
+        elif self.input_format in ["RGBA", "BGRx", "BGRA"]:
             self.bytes_per_pixel = 4
         else:
             Gst.error(f"Unsupported input format: {self.input_format}")
