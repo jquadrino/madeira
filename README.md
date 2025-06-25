@@ -1,7 +1,7 @@
 Madeira 
 ======
 
-A GStreamer plugin for video intelligence using Segment-Anything v2 with ONNX runtime in rust and python.
+A GStreamer plugin for segmenting everything using Segment-Anything v2. Choose between rust or python, each utilize ONNX runtime.
 
 
 ## Models
