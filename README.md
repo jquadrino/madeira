@@ -1,7 +1,7 @@
 Madeira 
 ======
 
-A GStreamer plugin for video intelligence using Segment-Anything v2 with ONNX runtime in python.
+A GStreamer plugin for video intelligence using Segment-Anything v2 with ONNX runtime in rust and python.
 
 
 ## Models
@@ -13,10 +13,10 @@ See [jquadrino/segment-anything-v2-onnx](https://huggingface.co/jquadrino/segmen
 
 ### Prerequisites
 
-- Python 3.7+
+- Rust or Python
 - GStreamer 1.20+
 - ONNX Runtime
-- SAMv2 ONNX model file
+- SAMv2 ONNX model files
 
 
 ## Usage
@@ -25,15 +25,22 @@ See [jquadrino/segment-anything-v2-onnx](https://huggingface.co/jquadrino/segmen
 ```bash
 export GST_PLUGIN_PATH=$(pwd)/madeira/plugins
 
+# or
+
+cargo build --release
+export GST_PLUGIN_PATH=$(pwd)/madeira/target/release
+
+# and
+
 gst-launch-1.0 \
-    filesrc location=car-detection.mp4 !
-    decodebin !
-    videoconvert !
-    video/x-raw,format=BGRx !
-    videorate !
-    video/x-raw,framerate=1/1 !
-    madeira mask-threshold=0.4 grid-stride=100 !
-    videoconvert !
-    x264enc tune=zerolatency ! 
+    filesrc location=car-detection.mp4 ! \
+    decodebin ! \
+    videoconvert ! \
+    video/x-raw,format=BGRx ! \
+    videorate ! \
+    video/x-raw,framerate=1/1 ! \
+    madeira mask-threshold=0.4 grid-stride=64 ! \
+    videoconvert ! \
+    x264enc tune=zerolatency ! \
     mp4mux ! filesink location=output.mp4
 ```
