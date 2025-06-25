@@ -1,7 +1,7 @@
 Madeira 
 ======
 
-A GStreamer plugin for segmenting everything using Segment-Anything v2. Choose between rust or python, each utilize ONNX runtime.
+A GStreamer plugin for segmenting everything using Segment-Anything v2. 
 
 
 ## Models
@@ -10,6 +10,9 @@ See [jquadrino/segment-anything-v2-onnx](https://huggingface.co/jquadrino/segmen
 
 
 ## Installation
+
+Choose between rust or python, each utilize ONNX runtime.
+
 
 ### Prerequisites
 
